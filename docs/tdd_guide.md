@@ -2,6 +2,14 @@
 
 This guide walks through porting the Python `DefaultAgent` to Go using strict TDD (red-green-refactor). Each step builds on the previous one. Complete them in order.
 
+> [!NOTE]
+> **Post-completion refactoring.** After this guide was completed, the following extractions were made to support the `LocalEnvironment` implementation:
+> - `Message`, `Action`, `Observation` → `internal/types/types.go`
+> - `InterruptAgentFlowError`, `SubmittedError`, `LimitsExceededError`, `FormatError` → `internal/types/errors.go`
+> - `recursiveMerge` → `utils.RecursiveMerge` in `internal/utils/merge.go`
+>
+> The `internal/agent/types.go` file now uses type aliases to re-export these, so all agent code continues to work with unqualified names. The code samples below reflect the original structure before extraction.
+
 > [!IMPORTANT]
 > **Source of truth:** Always refer back to [default.py](file:///home/rvald/mini-swe-agent/src/minisweagent/agents/default.py) and [control_flow.md](file:///home/rvald/mini-swe-agent/docs/advanced/control_flow.md) when in doubt about behavior.
 

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"path/filepath"
 	"encoding/json"
+
+	"github.com/rvald/code-rig/internal/utils"
 )
 
 func renderTemplate(tmpl string, vars map[string]any) (string, error) {
@@ -195,7 +197,7 @@ func (a *DefaultAgent) serialize() map[string]any {
         "messages":          a.messages,
         "trajectory_format": "mini-swe-agent-1.1",
     }
-    return recursiveMerge(data, a.model.Serialize(), a.env.Serialize())
+    return utils.RecursiveMerge(data, a.model.Serialize(), a.env.Serialize())
 }
 
 func (a *DefaultAgent) save() {

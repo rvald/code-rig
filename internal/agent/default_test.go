@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"encoding/json"
+
+	"github.com/rvald/code-rig/internal/utils"
 )
 
 func TestAgentConfig(t *testing.T) {
@@ -191,7 +193,7 @@ func TestInterruptAgentFlowCarriesMessages(t *testing.T) {
 func TestRecursiveMerge(t *testing.T) {
     a := map[string]any{"x": 1, "nested": map[string]any{"a": 1, "b": 2}}
     b := map[string]any{"y": 2, "nested": map[string]any{"b": 99, "c": 3}}
-    result := recursiveMerge(a, b)
+    result := utils.RecursiveMerge(a, b)
 
     if result["x"] != 1 {
         t.Errorf("x = %v, want 1", result["x"])
@@ -212,7 +214,7 @@ func TestRecursiveMerge(t *testing.T) {
 }
 
 func TestRecursiveMergeNilSafe(t *testing.T) {
-    result := recursiveMerge(nil, map[string]any{"a": 1}, nil)
+    result := utils.RecursiveMerge(nil, map[string]any{"a": 1}, nil)
     if result["a"] != 1 {
         t.Errorf("a = %v, want 1", result["a"])
     }
