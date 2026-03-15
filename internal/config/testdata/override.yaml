@@ -1,0 +1,5 @@
+agent:
+  step_limit: 5
+  cost_limit: 2.0
+model:
+  model_name: "claude-3"

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/rvald/code-rig/internal/agent"
+	"gopkg.in/yaml.v3"
 )
 
 // --- Phase 1: Config ---
@@ -306,5 +307,44 @@ func TestLocalEnvironmentSatisfiesInterface(t *testing.T) {
 	var e agent.Environment = NewLocalEnvironment(LocalEnvironmentConfig{})
 	if e == nil {
 		t.Fatal("LocalEnvironment should satisfy agent.Environment")
+	}
+}
+
+func TestBuildEnvironmentConfig(t *testing.T) {
+	raw := map[string]any{
+		"timeout": 10,
+		"env":     map[string]any{"PAGER": "cat"},
+	}
+	cfg, err := BuildEnvironmentConfigFromRawMap(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Timeout != 10 {
+		t.Errorf("Timeout = %d, want 10", cfg.Timeout)
+	}
+	if cfg.Env["PAGER"] != "cat" {
+		t.Errorf("Env[PAGER] = %q, want 'cat'", cfg.Env["PAGER"])
+	}
+}
+
+func TestLocalEnvironmentConfigYAMLRoundtrip(t *testing.T) {
+	input := `
+cwd: "/tmp"
+timeout: 10
+env:
+  PAGER: cat
+`
+	var cfg LocalEnvironmentConfig
+	if err := yaml.Unmarshal([]byte(input), &cfg); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if cfg.Cwd != "/tmp" {
+		t.Errorf("Cwd = %q, want '/tmp'", cfg.Cwd)
+	}
+	if cfg.Timeout != 10 {
+		t.Errorf("Timeout = %d, want 10", cfg.Timeout)
+	}
+	if cfg.Env["PAGER"] != "cat" {
+		t.Errorf("Env[PAGER] = %q, want 'cat'", cfg.Env["PAGER"])
 	}
 }

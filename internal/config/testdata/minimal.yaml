@@ -1,0 +1,5 @@
+agent:
+  system_template: "You are a test agent."
+  instance_template: "Do: {{.Task}}"
+environment:
+  timeout: 10

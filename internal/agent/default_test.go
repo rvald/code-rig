@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 
 	"github.com/rvald/code-rig/internal/utils"
+	"gopkg.in/yaml.v3"
 )
 
 func TestAgentConfig(t *testing.T) {
@@ -578,3 +579,57 @@ func (e *MockEnv) Execute(action Action) (Observation, error) {
 
 func (e *MockEnv) GetTemplateVars() map[string]any { return nil }
 func (e *MockEnv) Serialize() map[string]any       { return nil }
+
+func TestBuildAgentConfig(t *testing.T) {
+	raw := map[string]any{
+		"system_template":   "You are a helper.",
+		"instance_template": "Task: {{.Task}}",
+		"step_limit":        5,
+		"cost_limit":        2.0,
+	}
+	cfg, err := BuildAgentConfigFromRawMap(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.SystemTemplate != "You are a helper." {
+		t.Errorf("SystemTemplate = %q, want 'You are a helper.'", cfg.SystemTemplate)
+	}
+	if cfg.StepLimit != 5 {
+		t.Errorf("StepLimit = %d, want 5", cfg.StepLimit)
+	}
+	if cfg.CostLimit != 2.0 {
+		t.Errorf("CostLimit = %f, want 2.0", cfg.CostLimit)
+	}
+}
+
+func TestBuildAgentConfigMissingRequired(t *testing.T) {
+	raw := map[string]any{"step_limit": 5}
+	cfg, err := BuildAgentConfigFromRawMap(raw)
+	if err != nil {
+		t.Fatalf("BuildAgentConfigFromRawMap itself shouldn't error: %v", err)
+	}
+	err = ValidateAgentConfig(cfg)
+	if err == nil {
+		t.Error("expected validation error for missing system_template and instance_template")
+	}
+}
+
+func TestAgentConfigYAMLRoundtrip(t *testing.T) {
+	input := `
+system_template: "hello"
+instance_template: "world"
+step_limit: 5
+cost_limit: 2.0
+output_path: "/tmp/out.json"
+`
+	var cfg AgentConfig
+	if err := yaml.Unmarshal([]byte(input), &cfg); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if cfg.SystemTemplate != "hello" {
+		t.Errorf("SystemTemplate = %q, want 'hello'", cfg.SystemTemplate)
+	}
+	if cfg.StepLimit != 5 {
+		t.Errorf("StepLimit = %d, want 5", cfg.StepLimit)
+	}
+}
