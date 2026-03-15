@@ -21,6 +21,8 @@ type App struct {
 
 	ModelFactory func(model.ModelConfig) agent.Model
 	EnvFactory   func(environment.LocalEnvironmentConfig) agent.Environment
+
+	activeEnv agent.Environment
 }
 
 func DefaultModelFactory(cfg model.ModelConfig) agent.Model {
@@ -104,6 +106,7 @@ func (a *App) AssembleAgent(raw config.RawConfig) (*agent.DefaultAgent, error) {
 
 	m := a.ModelFactory(modelCfg)
 	e := a.EnvFactory(envCfg)
+	a.activeEnv = e
 
 	ag := agent.NewDefaultAgent(agentCfg, m, e)
 	return ag, nil
@@ -143,4 +146,10 @@ func (a *App) Run(r io.Reader) error {
 
 	_, err = ag.Run(task)
 	return err
+}
+
+func (a *App) Close() {
+	if cl, ok := a.activeEnv.(interface{ Cleanup() }); ok {
+		cl.Cleanup()
+	}
 }
