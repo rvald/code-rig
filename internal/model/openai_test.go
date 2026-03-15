@@ -160,5 +160,3 @@ func TestQueryAPICall(t *testing.T) {
 		t.Errorf("cost = %v, want 0.01", msg.Extra["cost"])
 	}
 }
-
-

@@ -136,6 +136,3 @@ func LoadAndMerge(specs []string) (RawConfig, error) {
 	}
 	return MergeConfigs(configs...), nil
 }
-
-
-

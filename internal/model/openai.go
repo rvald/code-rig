@@ -99,4 +99,3 @@ func (m *OpenAIModel) GetTemplateVars() map[string]any {
 func (m *OpenAIModel) Serialize() map[string]any {
 	return nil
 }
-

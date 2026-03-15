@@ -91,4 +91,3 @@ func (m *OpenAIModel) FormatObservationMessages(message agent.Message, outputs [
 	}
 	return results
 }
-
