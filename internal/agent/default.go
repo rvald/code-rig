@@ -1,9 +1,7 @@
 package agent
 
 import (
-	"text/template"
 	"fmt"
-	"bytes"
 	"os"
 	"errors"
 	"path/filepath"
@@ -12,17 +10,7 @@ import (
 	"github.com/rvald/code-rig/internal/utils"
 )
 
-func renderTemplate(tmpl string, vars map[string]any) (string, error) {
-	t, err := template.New("").Option("missingkey=error").Parse(tmpl)
-    if err != nil {
-        return "", fmt.Errorf("parsing template: %w", err)
-    }
-    var buf bytes.Buffer
-    if err := t.Execute(&buf, vars); err != nil {
-        return "", fmt.Errorf("executing template: %w", err)
-    }
-    return buf.String(), nil
-}
+
 
 type DefaultAgent struct {
 	config            AgentConfig
@@ -136,11 +124,11 @@ func (a *DefaultAgent) Run(task string) (RunResult, error) {
     a.messages = []Message{}
 
     vars := a.getTemplateVars()
-    sysContent, err := renderTemplate(a.config.SystemTemplate, vars)
+    sysContent, err := utils.RenderTemplate(a.config.SystemTemplate, vars)
     if err != nil {
         return RunResult{}, fmt.Errorf("rendering system template: %w", err)
     }
-    instContent, err := renderTemplate(a.config.InstanceTemplate, vars)
+    instContent, err := utils.RenderTemplate(a.config.InstanceTemplate, vars)
     if err != nil {
         return RunResult{}, fmt.Errorf("rendering instance template: %w", err)
     }

@@ -221,22 +221,7 @@ func TestRecursiveMergeNilSafe(t *testing.T) {
     }
 }
 
-func TestRenderTemplate(t *testing.T) {
-    result, err := renderTemplate("Hello {{.Name}}", map[string]any{"Name": "World"})
-    if err != nil {
-        t.Fatalf("unexpected error: %v", err)
-    }
-    if result != "Hello World" {
-        t.Errorf("result = %q, want %q", result, "Hello World")
-    }
-}
 
-func TestRenderTemplateMissingVar(t *testing.T) {
-    _, err := renderTemplate("Hello {{.Missing}}", map[string]any{"Name": "World"})
-    if err == nil {
-        t.Error("expected error for missing template variable, got nil")
-    }
-}
 
 func TestNewDefaultAgent(t *testing.T) {
     cfg := AgentConfig{SystemTemplate: "sys", InstanceTemplate: "inst"}
