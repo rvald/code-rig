@@ -10,6 +10,8 @@ func (e *InterruptAgentFlowError) Error() string {
 
 type SubmittedError struct {
 	InterruptAgentFlowError
+	ExitStatus string
+	Submission string
 }
 
 func (e *SubmittedError) Unwrap() error {
@@ -18,6 +20,8 @@ func (e *SubmittedError) Unwrap() error {
 
 func NewSubmittedError(submission string) *SubmittedError {
 	return &SubmittedError{
+		ExitStatus: "Submitted",
+		Submission: submission,
 		InterruptAgentFlowError: InterruptAgentFlowError{
 			Messages: []Message{{
 				Role:    "exit",
