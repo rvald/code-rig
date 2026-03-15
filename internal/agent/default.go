@@ -60,7 +60,7 @@ func (a *DefaultAgent) query() (Message, error) {
 }
 
 func (a *DefaultAgent) executeActions(msg Message) ([]Message, error) {
-	actions := a.getActions(msg)
+	actions := a.GetActions(msg)
 	var outputs []Observation
 	for _, action := range actions {
 		obs, err := a.env.Execute(action)
@@ -77,7 +77,7 @@ func (a *DefaultAgent) executeActions(msg Message) ([]Message, error) {
 	return a.addMessages(obsMessages...), nil
 }
 
-func (a *DefaultAgent) getActions(msg Message) []Action {
+func (a *DefaultAgent) GetActions(msg Message) []Action {
 	raw, ok := msg.Extra["actions"]
 	if !ok {
 		return nil

@@ -30,6 +30,13 @@ type AgentConfig struct {
 	OutputPath       string  `json:"output_path" yaml:"output_path"`
 }
 
+type InteractiveAgentConfig struct {
+	AgentConfig      `json:",inline" yaml:",inline"`
+	Mode             string   `json:"mode" yaml:"mode"`                           // "human", "confirm", "yolo"
+	WhitelistActions []string `json:"whitelist_actions" yaml:"whitelist_actions"` // Regex patterns
+	ConfirmExit      bool     `json:"confirm_exit" yaml:"confirm_exit"`
+}
+
 func BuildAgentConfigFromRawMap(raw map[string]any) (AgentConfig, error) {
 	data, err := yaml.Marshal(raw)
 	if err != nil {
