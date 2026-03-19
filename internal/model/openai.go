@@ -59,6 +59,12 @@ func (m *OpenAIModel) Query(messages []agent.Message) (agent.Message, error) {
 				oaiMsg.ToolCallID = id
 			}
 		}
+		// Re-attach ToolCalls on assistant messages so the API sees them
+		if msg.Role == "assistant" {
+			if tc, ok := msg.Extra["tool_calls"].([]openai.ToolCall); ok {
+				oaiMsg.ToolCalls = tc
+			}
+		}
 		oaiMessages = append(oaiMessages, oaiMsg)
 	}
 
@@ -86,8 +92,9 @@ func (m *OpenAIModel) Query(messages []agent.Message) (agent.Message, error) {
 		Role:    choice.Message.Role,
 		Content: choice.Message.Content,
 		Extra: map[string]any{
-			"actions": actions,
-			"cost":    cost,
+			"actions":    actions,
+			"cost":       cost,
+			"tool_calls": choice.Message.ToolCalls,
 		},
 	}, nil
 }

@@ -148,11 +148,11 @@ func (a *DefaultAgent) Run(task string) (RunResult, error) {
 					Role: "exit", Content: err.Error(),
 					Extra: map[string]any{"exit_status": "Error", "submission": ""},
 				})
-				a.save()
+				a.Save(a.config.OutputPath)
 				return RunResult{}, err
 			}
 		}
-		a.save()
+		a.Save(a.config.OutputPath)
 
 		last := a.messages[len(a.messages)-1]
 		if last.Role == "exit" {
@@ -186,13 +186,13 @@ func (a *DefaultAgent) serialize() map[string]any {
 	return utils.RecursiveMerge(data, a.model.Serialize(), a.env.Serialize())
 }
 
-func (a *DefaultAgent) save() {
-	if a.config.OutputPath == "" {
-		return
+func (a *DefaultAgent) Save(path string) error {
+	if path == "" {
+		return nil
 	}
 	data := a.serialize()
 	b, _ := json.MarshalIndent(data, "", "  ")
-	dir := filepath.Dir(a.config.OutputPath)
+	dir := filepath.Dir(path)
 	os.MkdirAll(dir, 0o755)
-	os.WriteFile(a.config.OutputPath, b, 0o644)
+	return os.WriteFile(path, b, 0o644)
 }

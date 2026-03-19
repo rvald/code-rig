@@ -1,142 +1,344 @@
-# TDD Guide: CLI Entry Point in Go — Phase 14
+# TDD Guide: CLI Entry Point in Go — Phase 14 (Deep Dive)
 
-This guide walks through implementing the command-line interface (CLI) for your Go agent using strict TDD (red-green-refactor). 
+This guide walks through implementing a robust command-line interface (CLI) for your Go agent using strict TDD (red-green-refactor). 
 
-By the end of this phase, you will have an executable that parses CLI flags, loads YAML config files, constructs the Model and Environment, wires them into the Agent, and runs a task end-to-end.
+Because the CLI is the glue that binds `Config`, `Model`, `Environment`, and `Agent` together, it must handle:
+1. Interactive prompts (fallback when args are missing)
+2. Complex YAML config loading and merging
+3. On-the-fly dot-notation config overrides (e.g., `-c agent.cost_limit=5`)
+4. Dependency injection to wire up the core structs
+5. First-time setup configuration and `.env` management
 
 > [!IMPORTANT]
-> **Source of truth:** Always refer back to [run/mini.py](file:///home/rvald/mini-swe-agent/src/minisweagent/run/mini.py) when in doubt about behavior.
-
----
-
-## How the Python CLI Works (Reference)
-
-```mermaid
-flowchart TD
-    subgraph cli["run/mini.py main()"]
-        A["Parse CLI args<br/>(--task, --config, --model)"] --> B["get_config_from_spec()<br/>for each config source"]
-        B --> C["recursive_merge()<br/>Combine configs + CLI overrides"]
-        C --> D{"Task provided?"}
-        D -->|No| E["Prompt user for task"]
-        D -->|Yes| F
-        E --> F["get_model(config)"]
-        F --> G["get_environment(config)"]
-        G --> H["get_agent(model, env, config)"]
-        H --> I["agent.run(task)"]
-    end
-```
-
-### Key Python Components
-
-| Python Component | What it does | Go equivalent |
-|---|---|---|
-| `typer.Option` | Defines CLI flags | `flag`, `pflag`, or `cobra` |
-| `get_config_from_spec` | Loads YAML or parses `key=val` | `config.GetConfigFromSpec` (Phase 12) |
-| `get_model` | Factory that instantiates the model | `NewOpenAIModel` (Phase 13) |
-| `get_environment` | Factory that instantiates the env | `NewLocalEnvironment` (Phase 11) |
-| `get_agent` | Factory that instantiates the agent | `NewDefaultAgent` (Phase 0-10) |
-| `agent.run(task)` | Starts the main feedback loop | `agent.Run(task)` |
+> **Source of truth:** Always refer back to [run/mini.py](file:///home/rvald/mini-swe-agent/src/minisweagent/run/mini.py), [run/utilities/config.py](file:///home/rvald/mini-swe-agent/src/minisweagent/run/utilities/config.py), and [config/__init__.py](file:///home/rvald/mini-swe-agent/src/minisweagent/config/__init__.py) when in doubt.
 
 ---
 
 ## File Structure
 
-For CLI applications in Go, the standard layout places the main package in `cmd/`. The actual CLI parsing logic is often extracted into an `internal/cli` or `internal/app` package so it can be tested without compiling the binary.
+For Go CLI applications, standard layout dictates the `main` package lives in `cmd/`, while the testable application logic lives in `internal/app` or `internal/cli`.
 
 ```
 cmd/mini/
-└── main.go            # Minimal entry point: os.Exit(cli.Run(os.Args))
+└── main.go               # Minimal wrapper: cli.Main()
 internal/cli/
-├── app.go             # CLI flag parsing and wiring
-└── app_test.go        # All tests (white-box)
+├── setup.go              # First-time config (.env generation)
+├── setup_test.go         
+├── config_merge.go       # Parsing dot-notation and merging YAMLs
+├── config_merge_test.go  
+├── app.go                # Flag parsing and constructor wiring
+└── app_test.go           
 ```
-
-At the top of `cmd/mini/main.go`:
-```go
-package main
-```
-
-At the top of `internal/cli/*.go`:
-```go
-package cli
-```
-
-> [!NOTE]
-> **CLI Library Choice:** You can use the standard library `flag`, `github.com/spf13/pflag` (drop-in replacement with POSIX flags), or `github.com/spf13/cobra` (for subcommands). Since `mini` is a single command with many flags, `pflag` is the most lightweight option that matches Python's Typer/Click interface, but sticking to standard `flag` is perfectly fine for TDD. The examples below assume you are parsing args manually or using standard `flag` for simplicity in tests.
 
 ---
 
-## Phase 1: Flag Parsing and Config Merging
+## Phase 1: Config Spec Parsing and Merging
 
-### Step 1.1 — Parse Flags into Overrides Map
+Before the app can run, it must gather settings. Python does this by parsing a list of `-c` arguments which can be either **file paths** (`mini.yaml`) or **key-value overrides** (`model.model_kwargs.temperature=0.5`). 
 
-**What Python does:** CLI flags like `--model gpt-4` or `--cost-limit 5.0` are packed into a dictionary block and merged on top of the YAML config files.
+### Step 1.1 — Dot-Notation -> Nested Map
 
-```python
-configs.append({
-    "run": {"task": task},
-    "agent": {"cost_limit": cost_limit},
-    "model": {"model_name": model_name},
-})
-```
+**What Python does:** `_key_value_spec_to_nested_dict` splits on `=` and then recursively creates dictionaries from the dot-separated keys.
 
-**🔴 RED** — In `app_test.go`:
+**🔴 RED** — In `config_merge_test.go`:
 
 ```go
-func TestParseFlagsToConfigOverride(t *testing.T) {
-    args := []string{
-        "--task", "Fix the bug",
-        "--model", "gpt-4",
-        "--cost-limit", "5.0",
-        "--config", "test.yaml", // Not used for override map, but should be parsed
+func TestParseKeyValueSpec(t *testing.T) {
+    tests := []struct{
+        input string
+        want  map[string]any
+    }{
+        {
+            input: "agent.cost_limit=5",
+            want:  map[string]any{"agent": map[string]any{"cost_limit": 5.0}}, // Note json/yaml unmarshals nums as float64 usually
+        },
+        {
+            input: "model.model_kwargs.temperature=0.5",
+            want:  map[string]any{"model": map[string]any{"model_kwargs": map[string]any{"temperature": 0.5}}},
+        },
+        {
+            input: "agent.mode=yolo",
+            want:  map[string]any{"agent": map[string]any{"mode": "yolo"}},
+        },
+    }
+
+    for _, tc := range tests {
+        got, err := ParseKeyValueSpec(tc.input)
+        if err != nil {
+            t.Fatalf("unexpected error for %q: %v", tc.input, err)
+        }
+        if !reflect.DeepEqual(got, tc.want) {
+            t.Errorf("for %q, got %v, want %v", tc.input, got, tc.want)
+        }
+    }
+}
+```
+
+**🟢 GREEN** — In `config_merge.go`:
+
+```go
+import (
+    "encoding/json"
+    "fmt"
+    "strconv"
+    "strings"
+)
+
+// ParseKeyValueSpec converts "a.b.c=val" into map[string]any{"a": {"b": {"c": val}}}
+func ParseKeyValueSpec(spec string) (map[string]any, error) {
+    parts := strings.SplitN(spec, "=", 2)
+    if len(parts) != 2 {
+        return nil, fmt.Errorf("invalid spec format, expected key=value: %s", spec)
     }
     
-    app := NewApp()
-    err := app.ParseArgs(args)
+    keyPath := parts[0]
+    rawVal := parts[1]
+    
+    // Attempt to parse value as JSON (handles bools, ints, floats)
+    var parsedVal any
+    if err := json.Unmarshal([]byte(rawVal), &parsedVal); err != nil {
+        // Fallback to raw string if it's not valid JSON (like "yolo")
+        parsedVal = rawVal
+    }
+
+    keys := strings.Split(keyPath, ".")
+    result := make(map[string]any)
+    current := result
+
+    for i := 0; i < len(keys)-1; i++ {
+        k := keys[i]
+        next := make(map[string]any)
+        current[k] = next
+        current = next
+    }
+    
+    current[keys[len(keys)-1]] = parsedVal
+    return result, nil
+}
+```
+
+### Step 1.2 — Resolving the Config Spec List
+
+**What Python does:** Iterates over the `-c` flags. If it contains `=`, parse as key-value. Otherwise, find the `.yaml` file and parse it. Finally, `recursive_merge` them all together.
+
+**🔴 RED:**
+
+```go
+func TestBuildFinalConfigFromSpecs(t *testing.T) {
+    // Requires a dummy YAML file and your RecursiveMerge implementation from Phase 4
+    specs := []string{
+        "testdata/base.yaml",
+        "agent.step_limit=50",
+    }
+    
+    // testdata/base.yaml contains:
+    // agent:
+    //   mode: confirm
+    //   step_limit: 10
+    
+    merged, err := BuildFinalConfigFromSpecs(specs)
     if err != nil {
-        t.Fatalf("unexpected error: %v", err)
-    }
-
-    if app.Task != "Fix the bug" {
-        t.Errorf("Task = %q, want 'Fix the bug'", app.Task)
-    }
-    if len(app.ConfigFiles) != 1 || app.ConfigFiles[0] != "test.yaml" {
-        t.Errorf("ConfigFiles = %v, want ['test.yaml']", app.ConfigFiles)
-    }
-
-    // Check the generated override config map
-    override := app.GetCLIOverrideConfig()
-    
-    agent, ok := override.Agent
-    if !ok || agent["cost_limit"] != 5.0 {
-        t.Errorf("Agent cost_limit = %v, want 5.0", agent["cost_limit"])
+        t.Fatal(err)
     }
     
-    model, ok := override.Model
-    if !ok || model["model_name"] != "gpt-4" {
-        t.Errorf("Model model_name = %v, want 'gpt-4'", model["model_name"])
+    agentBlock, _ := merged["agent"].(map[string]any)
+    if agentBlock["mode"] != "confirm" {
+        t.Errorf("expected mode=confirm from base.yaml")
+    }
+    if agentBlock["step_limit"] != float64(50) {
+        t.Errorf("expected step_limit=50 from override, got %v", agentBlock["step_limit"])
     }
 }
 ```
 
-**🟢 GREEN** — In `app.go`:
+**🟢 GREEN:**
+
+Use the `RecursiveMerge` function you already built for `DefaultAgent` (or `internal/utils`).
 
 ```go
-import "flag"
-
-type App struct {
-    Task        string
-    Model       string
-    CostLimit   float64
-    ConfigFiles []string
-    // Unused flags like yolo, agent_class, environment_class can be added later
+func BuildFinalConfigFromSpecs(specs []string) (map[string]any, error) {
+    var configs []map[string]any
+    
+    for _, spec := range specs {
+        if strings.Contains(spec, "=") {
+            override, err := ParseKeyValueSpec(spec)
+            if err != nil {
+                return nil, err
+            }
+            configs = append(configs, override)
+        } else {
+            fileConfig, err := LoadYAMLFile(spec) // Implementation relies on os.ReadFile + yaml.Unmarshal
+            if err != nil {
+                return nil, err
+            }
+            configs = append(configs, fileConfig)
+        }
+    }
+    
+    // Merge all sequentially
+    result := make(map[string]any)
+    for _, cfg := range configs {
+        result = utils.RecursiveMerge(result, cfg)
+    }
+    return result, nil
 }
+```
 
-func NewApp() *App {
-    return &App{}
+---
+
+## Phase 2: First-Time Setup (`configure_if_first_time`)
+
+Python's `run/mini.py` calls `configure_if_first_time()`, which checks if `MSWEA_CONFIGURED` is set. If not, it runs an interactive wizard to create a `.env` file holding the default model and API key.
+
+### Step 2.1 — Checking for Configuration Status
+
+**🔴 RED** — In `setup_test.go`:
+
+```go
+func TestIsConfigured(t *testing.T) {
+    os.Unsetenv("MSWEA_CONFIGURED")
+    if IsConfigured() {
+        t.Error("expected false when env var missing")
+    }
+    
+    os.Setenv("MSWEA_CONFIGURED", "true")
+    if !IsConfigured() {
+        t.Error("expected true when env var set")
+    }
 }
+```
 
-// stringSlice implements flag.Value to allow multiple --config flags
+**🟢 GREEN** — In `setup.go`:
+
+```go
+func IsConfigured() bool {
+    // In Go, typically we use godotenv.Load() to load .env files into os.Environ()
+    return os.Getenv("MSWEA_CONFIGURED") == "true"
+}
+```
+
+### Step 2.2 — The Setup Wizard
+
+**What Python does:** Uses `prompt_toolkit` to ask for Model and API Key, then writes to `{global_config_dir}/.env`.
+
+*Note: For TDD, wrap this behind an interface or pass `io.Reader`/`io.Writer` to test the prompt flow cleanly.*
+
+**🔴 RED:**
+
+```go
+func TestRunSetupWizard(t *testing.T) {
+    inBuf := strings.NewReader("openai/gpt-4\nOPENAI_API_KEY\nsk-test123\n")
+    var outBuf bytes.Buffer
+    
+    // Use a temporary file for .env target
+    tmpEnv := filepath.Join(t.TempDir(), ".env")
+    
+    err := RunSetupWizard(inBuf, &outBuf, tmpEnv)
+    if err != nil {
+        t.Fatal(err)
+    }
+    
+    envContent, _ := os.ReadFile(tmpEnv)
+    content := string(envContent)
+    
+    if !strings.Contains(content, `MSWEA_MODEL_NAME="openai/gpt-4"`) {
+        t.Errorf("missing model name in .env")
+    }
+    if !strings.Contains(content, `OPENAI_API_KEY="sk-test123"`) {
+        t.Errorf("missing api key in .env")
+    }
+    if !strings.Contains(content, `MSWEA_CONFIGURED="true"`) {
+        t.Errorf("missing configured flag")
+    }
+}
+```
+
+**🟢 GREEN:**
+
+```go
+func RunSetupWizard(in io.Reader, out io.Writer, envFilePath string) error {
+    scanner := bufio.NewScanner(in)
+    
+    fmt.Fprintln(out, "To get started, we need to set up your global config file.")
+    fmt.Fprint(out, "Enter your default model (e.g., openai/gpt-4o): ")
+    scanner.Scan()
+    model := strings.TrimSpace(scanner.Text())
+    
+    fmt.Fprint(out, "Enter your API key name (e.g., OPENAI_API_KEY): ")
+    scanner.Scan()
+    keyName := strings.TrimSpace(scanner.Text())
+    
+    var keyValue string
+    if keyName != "" {
+        fmt.Fprintf(out, "Enter your API key value for %s: ", keyName)
+        scanner.Scan()
+        keyValue = strings.TrimSpace(scanner.Text())
+    }
+    
+    // Write to file (in Python this uses dotenv.set_key)
+    f, err := os.OpenFile(envFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+    if err != nil {
+        return err
+    }
+    defer f.Close()
+    
+    if model != "" {
+        fmt.Fprintf(f, "MSWEA_MODEL_NAME=\"%s\"\n", model)
+    }
+    if keyName != "" && keyValue != "" {
+        fmt.Fprintf(f, "%s=\"%s\"\n", keyName, keyValue)
+    }
+    fmt.Fprintf(f, "MSWEA_CONFIGURED=\"true\"\n")
+    
+    return nil
+}
+```
+
+---
+
+## Phase 3: The `App` Struct and Flag Parsing
+
+Python uses `typer.Option`. In Go, we'll use `flag` to construct our base configuration overrides.
+
+### Step 3.1 — Parse CLI Flags
+
+**🔴 RED:**
+
+```go
+func TestAppParseFlags(t *testing.T) {
+    app := NewApp()
+    
+    args := []string{
+        "--task", "Fix the db connection",
+        "--model", "gpt-4",
+        "--cost-limit", "10",
+        "--yolo",
+        "-c", "config.yaml",
+        "-c", "agent.step_limit=5",
+    }
+    
+    if err := app.ParseArgs(args); err != nil {
+        t.Fatal(err)
+    }
+    
+    if app.Task != "Fix the db connection" {
+        t.Errorf("Task = %q", app.Task)
+    }
+    if !app.Yolo {
+        t.Errorf("Expected Yolo to be true")
+    }
+    if app.CostLimit != 10 {
+        t.Errorf("Expected CostLimit=10")
+    }
+    if len(app.ConfigSpecs) != 2 {
+        t.Errorf("Expected 2 config specs")
+    }
+}
+```
+
+**🟢 GREEN:**
+
+```go
 type stringSlice []string
 func (i *stringSlice) String() string { return fmt.Sprint(*i) }
 func (i *stringSlice) Set(value string) error {
@@ -144,289 +346,242 @@ func (i *stringSlice) Set(value string) error {
     return nil
 }
 
+type App struct {
+    Task            string
+    Model           string
+    ModelClass      string
+    AgentClass      string
+    EnvironmentClass string
+    Yolo            bool
+    CostLimit       float64
+    ConfigSpecs     stringSlice
+    OutputPath      string
+    ExitImmediately bool
+}
+
+func NewApp() *App {
+    return &App{}
+}
+
 func (a *App) ParseArgs(args []string) error {
     fs := flag.NewFlagSet("mini", flag.ContinueOnError)
     
-    fs.StringVar(&a.Task, "task", "", "Task/problem statement")
+    fs.StringVar(&a.Task, "task", "", "Task/problem statement (or -t)")
+    fs.StringVar(&a.Task, "t", "", "Task (shorthand)")
+    
     fs.StringVar(&a.Model, "model", "", "Model to use")
-    fs.Float64Var(&a.CostLimit, "cost-limit", -1, "Cost limit. Set to 0 to disable.")
+    fs.StringVar(&a.Model, "m", "", "Model (shorthand)")
     
-    var configs stringSlice
-    fs.Var(&configs, "config", "Path to config files or key-value pairs")
+    fs.BoolVar(&a.Yolo, "yolo", false, "Run without confirmation")
+    fs.BoolVar(&a.Yolo, "y", false, "Yolo (shorthand)")
     
-    if err := fs.Parse(args); err != nil {
+    fs.Float64Var(&a.CostLimit, "cost-limit", -1, "Cost limit")
+    fs.Float64Var(&a.CostLimit, "l", -1, "Cost limit (shorthand)")
+    
+    fs.StringVar(&a.ModelClass, "model-class", "", "Model class")
+    fs.StringVar(&a.AgentClass, "agent-class", "", "Agent class")
+    fs.StringVar(&a.EnvironmentClass, "environment-class", "", "Env class")
+    
+    fs.Var(&a.ConfigSpecs, "config", "Config specs")
+    fs.Var(&a.ConfigSpecs, "c", "Config specs (shorthand)")
+    
+    fs.StringVar(&a.OutputPath, "output", "last_mini_run.traj.json", "Output trajectory")
+    fs.StringVar(&a.OutputPath, "o", "last_mini_run.traj.json", "Output (shorthand)")
+    
+    return fs.Parse(args)
+}
+```
+
+---
+
+## Phase 4: Constructing the Final Payload & Dependency Injection
+
+The magic of `mini.py` is passing the CLI-derived `configs` dict into the `get_agent()`, `get_environment()`, and `get_model()` functions. 
+
+You need factories in Go that map these strings (`model_class="litellm"`) to struct implementations.
+
+### Step 4.1 — Final Config Construction
+
+**🔴 RED:**
+
+```go
+func TestAppBuildFinalConfig(t *testing.T) {
+    app := NewApp()
+    app.Yolo = true
+    app.Task = "test task"
+    
+    finalMap := app.BuildOverrideMap()
+    
+    agentSection := finalMap["agent"].(map[string]any)
+    if agentSection["mode"] != "yolo" {
+        t.Errorf("Expected mode=yolo")
+    }
+    runSection := finalMap["run"].(map[string]any)
+    if runSection["task"] != "test task" {
+        t.Errorf("Expected task=test task")
+    }
+}
+```
+
+**🟢 GREEN:**
+
+```go
+func (a *App) BuildOverrideMap() map[string]any {
+    // Mimics the `configs.append({...})` block in mini.py line 73
+    m := map[string]any{
+        "run": map[string]any{},
+        "agent": map[string]any{},
+        "model": map[string]any{},
+        "environment": map[string]any{},
+    }
+    
+    if a.Task != "" { m["run"].(map[string]any)["task"] = a.Task }
+    
+    if a.Yolo {
+        m["agent"].(map[string]any)["mode"] = "yolo"
+    }
+    if a.CostLimit >= 0 {
+        m["agent"].(map[string]any)["cost_limit"] = a.CostLimit
+    }
+    if a.ExitImmediately {
+        m["agent"].(map[string]any)["confirm_exit"] = false
+    }
+    if a.OutputPath != "" {
+        m["agent"].(map[string]any)["output_path"] = a.OutputPath
+    }
+    
+    if a.Model != "" { m["model"].(map[string]any)["model_name"] = a.Model }
+    if a.ModelClass != "" { m["model"].(map[string]any)["model_class"] = a.ModelClass }
+    if a.EnvironmentClass != "" { m["environment"].(map[string]any)["environment_class"] = a.EnvironmentClass }
+    if a.AgentClass != "" { m["agent"].(map[string]any)["agent_class"] = a.AgentClass }
+    
+    return m
+}
+```
+
+### Step 4.2 — Component Wiring (Factories)
+
+Because Go doesn't have Python's `importlib.import_module`, we map strings manually.
+
+```go
+// internal/cli/factories.go
+func GetEnvironment(envClass string, cfg map[string]any) (environment.Environment, error) {
+    if envClass == "" || envClass == "local" {
+        envCfg, _ := config.BuildEnvironmentConfig(cfg) // From Phase 12
+        return environment.NewLocalEnvironment(envCfg), nil
+    }
+    if envClass == "docker" {
+        // ... build docker config
+        return environment.NewDockerEnvironment(dockerCfg)
+    }
+    return nil, fmt.Errorf("unknown environment class: %s", envClass)
+}
+
+func GetModel(modelClass string, cfg map[string]any) (agent.Model, error) {
+    if modelClass == "" || modelClass == "litellm" {
+        modelCfg, _ := config.BuildModelConfig(cfg)
+        return model.NewOpenAIModel(modelCfg, os.Getenv("OPENAI_API_KEY")), nil
+    }
+    return nil, fmt.Errorf("unknown model class")
+}
+
+func GetAgent(agentClass string, m agent.Model, e environment.Environment, cfg map[string]any) (agent.Agent, error) {
+    if agentClass == "" || agentClass == "interactive" {
+        agentCfg, _ := config.BuildInteractiveAgentConfig(cfg)
+        return agent.NewInteractiveAgent(agentCfg, m, e), nil
+    }
+    return nil, fmt.Errorf("unknown agent class")
+}
+```
+
+---
+
+## Phase 5: The Execution Path
+
+Tie it all together in `Execute()`.
+
+```go
+func (a *App) Execute(args []string) error {
+    if !IsConfigured() {
+        RunSetupWizard(os.Stdin, os.Stdout, ".env")
+    }
+
+    // 1. Parse Args
+    if err := a.ParseArgs(args); err != nil {
+        return err
+    }
+
+    // 2. Default Config Spec behavior
+    if len(a.ConfigSpecs) == 0 {
+        a.ConfigSpecs = []string{"mini.yaml"}
+    }
+
+    // 3. Build & merge maps
+    fileConfigMap, err := BuildFinalConfigFromSpecs(a.ConfigSpecs)
+    if err != nil {
         return err
     }
     
-    a.ConfigFiles = configs
-    return nil
-}
+    finalMap := utils.RecursiveMerge(fileConfigMap, a.BuildOverrideMap())
 
-// Assumes config.RawConfig from Phase 12
-func (a *App) GetCLIOverrideConfig() config.RawConfig {
-    cfg := config.RawConfig{
-        Agent: make(map[string]any),
-        Model: make(map[string]any),
+    // 4. Prompt for task if missing
+    runSection, _ := finalMap["run"].(map[string]any)
+    task, _ := runSection["task"].(string)
+    if task == "" {
+        fmt.Println("What do you want to do?")
+        scanner := bufio.NewScanner(os.Stdin)
+        if scanner.Scan() {
+            task = scanner.Text()
+        }
     }
+
+    // 5. Build dependencies using Factory Switchers
+    envClass, _ := finalMap["environment"].(map[string]any)["environment_class"].(string)
+    env, _ := GetEnvironment(envClass, finalMap["environment"].(map[string]any))
+
+    modelClass, _ := finalMap["model"].(map[string]any)["model_class"].(string)
+    mod, _ := GetModel(modelClass, finalMap["model"].(map[string]any))
+
+    agentClass, _ := finalMap["agent"].(map[string]any)["agent_class"].(string)
+    ag, _ := GetAgent(agentClass, mod, env, finalMap["agent"].(map[string]any))
+
+    // 6. Run
+    _, err = ag.Run(task) // Depending on your return signature
     
-    if a.CostLimit >= 0 {
-        cfg.Agent["cost_limit"] = a.CostLimit
+    // 7. Save trajectory
+    outPath, _ := finalMap["agent"].(map[string]any)["output_path"].(string)
+    if outPath != "" {
+        ag.Save(outPath) // Implement Save on DefaultAgent if not already done
+        fmt.Printf("Saved trajectory to '%s'\n", outPath)
     }
-    if a.Model != "" {
-        cfg.Model["model_name"] = a.Model
-    }
-    return cfg
-}
-```
 
----
-
-### Step 1.2 — Merging File Configs and CLI Flags
-
-**🔴 RED:**
-
-```go
-func TestBuildFinalConfig(t *testing.T) {
-    // We need to mock config.LoadAndMerge or rely on a real testdata file
-    // Assuming config package handles the actual file loading, App just calls it.
-    
-    app := NewApp()
-    app.ConfigFiles = []string{"agent.step_limit=10"} // valid key-value spec
-    app.CostLimit = 5.0 // From CLI flag
-    
-    finalConfig, err := app.BuildFinalConfig()
-    if err != nil {
-        t.Fatalf("unexpected error: %v", err)
-    }
-    
-    if finalConfig.Agent["step_limit"] != float64(10) {
-        t.Errorf("step_limit from spec = %v, want 10", finalConfig.Agent["step_limit"])
-    }
-    if finalConfig.Agent["cost_limit"] != 5.0 {
-        t.Errorf("cost_limit from CLI flag = %v, want 5.0", finalConfig.Agent["cost_limit"])
-    }
+    return err
 }
 ```
 
-**🟢 GREEN:**
+### Run it!
 
 ```go
-func (a *App) BuildFinalConfig() (config.RawConfig, error) {
-    // If no configs specified, Python defaults to "mini.yaml", we can add that logic here.
-    fileCfg, err := config.LoadAndMerge(a.ConfigFiles)
-    if err != nil {
-        return config.RawConfig{}, err
-    }
-    
-    overrideCfg := a.GetCLIOverrideConfig()
-    
-    return config.MergeConfigs(fileCfg, overrideCfg), nil
-}
-```
-
----
-
-## Phase 2: Dependency Injection (Wiring)
-
-### Step 2.1 — Wiring the Types
-
-This is the core of `run()`. We convert raw `map[string]any` configurations into typed structs and pass them into the constructors of our Phase 0-13 components.
-
-**🔴 RED:**
-
-To test this without doing network calls or real file ops, we use the `DeterministicModel` (mock) and an injected `Environment` factory.
-
-```go
-func TestBuildAgent(t *testing.T) {
-    rawCfg := config.RawConfig{
-        Agent: map[string]any{
-            "system_template": "sys",
-            "instance_template": "inst",
-        },
-        Model: map[string]any{
-            "model_name": "test-mock",
-        },
-    }
-    
-    app := NewApp()
-    
-    // We want to verify it instantiates properly
-    ag, err := app.AssembleAgent(rawCfg)
-    if err != nil {
-        t.Fatalf("unexpected error: %v", err)
-    }
-    if ag == nil {
-        t.Fatal("expected non-nil agent")
-    }
-}
-```
-
-**🟢 GREEN:**
-
-```go
-// Assumes building typed configs from Phase 12: config.BuildAgentConfig, etc.
-
-func (a *App) AssembleAgent(raw config.RawConfig) (*agent.DefaultAgent, error) {
-    agentCfg, err := config.BuildAgentConfig(raw.Agent)
-    if err != nil {
-        return nil, fmt.Errorf("building agent config: %w", err)
-    }
-    if err := config.ValidateAgentConfig(agentCfg); err != nil {
-        return nil, err
-    }
-    
-    modelCfg, err := config.BuildModelConfig(raw.Model)
-    if err != nil {
-        return nil, fmt.Errorf("building model config: %w", err)
-    }
-    
-    envCfg, err := config.BuildEnvironmentConfig(raw.Environment)
-    if err != nil {
-        return nil, fmt.Errorf("building env config: %w", err)
-    }
-    
-    // Instantiate components
-    // Note: Python's `get_model` checks `model_class`, defaulting to litellm.
-    // For Go, you might switch on ModelName or a ModelClass config field.
-    m := model.NewOpenAIModel(modelCfg, os.Getenv("OPENAI_API_KEY"))
-    e := environment.NewLocalEnvironment(envCfg)
-    
-    ag := agent.NewDefaultAgent(agentCfg, m, e)
-    return ag, nil
-}
-```
-
----
-
-## Phase 3: The Run Loop
-
-### Step 3.1 — Prompt for Task if Missing
-
-**Python behavior:** If `--task` is missing, `_multiline_prompt()` asks the user.
-
-**🔴 RED:**
-
-```go
-func TestPromptForTask(t *testing.T) {
-    app := NewApp()
-    // Override stdin for testing
-    input := "Fix the login bug\nEOF\n"
-    r, w, _ := os.Pipe()
-    w.Write([]byte(input))
-    w.Close()
-    
-    // Swap global or pass reader
-    task, err := app.GetTask(r)
-    if err != nil {
-        t.Fatalf("unexpected error: %v", err)
-    }
-    if task != "Fix the login bug\n" { // Adjust based on your multiline prompt rules
-        t.Errorf("Task = %q", task)
-    }
-}
-```
-
-**🟢 GREEN:**
-
-```go
-func (a *App) GetTask(r io.Reader) (string, error) {
-    if a.Task != "" {
-        return a.Task, nil
-    }
-    
-    fmt.Println("What do you want to do? (Press Ctrl+D to submit)")
-    bytes, err := io.ReadAll(r)
-    if err != nil {
-        return "", err
-    }
-    return strings.TrimSpace(string(bytes)), nil
-}
-```
-
----
-
-### Step 3.2 — Full Execution pipeline
-
-**🔴 RED:**
-
-This is hard to test automatically without hitting the real API because `AssembleAgent` hardcodes `NewOpenAIModel`. 
-
-> [!CAUTION]
-> **Dependency Inversion.** To make `AssembleAgent` unit-testable end-to-end, you shouldn't hardcode `NewOpenAIModel` and `NewLocalEnvironment`. In Go, the CLI application struct usually accepts `AgentFactory`, `ModelFactory` functions, or interfaces to allow mocking.
-
-Let's refactor `App` slightly for testing:
-
-```go
-func TestAppRunEndToEnd(t *testing.T) {
-    app := NewApp()
-    app.Task = "test task"
-    // Inject mocks
-    app.ModelFactory = func(cfg config.ModelConfig) model.ModelInterface {
-        return &agent.MockModel{Responses: []agent.Message{{Role: "assistant", Extra: map[string]any{"actions": []agent.Action{{Command: "echo hi"}}}}}}
-    }
-    app.EnvFactory = func(cfg config.EnvConfig) env.EnvironmentInterface {
-        return &agent.MockEnv{Outputs: []agent.Observation{{Output: "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\ndone\n", ReturnCode: 0}}}
-    }
-
-    // You would provide an initial valid YAML configuration via mock or file
-    app.ConfigFiles = []string{"agent.system_template=sys", "agent.instance_template=inst"}
-
-    err := app.Run()
-    if err != nil {
-        t.Fatalf("unexpected error: %v", err)
-    }
-}
-```
-
----
-
-## Phase 4: Main Entry Point
-
-Create `cmd/mini/main.go` to tie it all together:
-
-```go
+// cmd/mini/main.go
 package main
 
 import (
-    "fmt"
     "os"
-    "github.com/your-repo/internal/cli"
+    "fmt"
+    "your_repo/internal/cli"
 )
 
 func main() {
     app := cli.NewApp()
-    
-    // In production, we use the real factories
-    app.ModelFactory = cli.DefaultModelFactory
-    app.EnvFactory = cli.DefaultEnvFactory
-    
-    if err := app.ParseArgs(os.Args[1:]); err != nil {
-        fmt.Fprintf(os.Stderr, "Error parsing arguments: %v\n", err)
-        os.Exit(1)
-    }
-    
-    if err := app.Run(); err != nil {
-        fmt.Fprintf(os.Stderr, "Agent failed: %v\n", err)
+    if err := app.Execute(os.Args[1:]); err != nil {
+        fmt.Fprintf(os.Stderr, "Fatal error: %v\n", err)
         os.Exit(1)
     }
 }
 ```
 
----
+## Summary — Deep Port Highlights
 
-## Summary — Implementation Order
-
-| Step | Test file | Production file | What you're proving |
-|---|---|---|---|
-| 1.1 | `TestParseFlagsToConfigOverride` | `app.go` | Flags correctly hydrate the overrides map |
-| 1.2 | `TestBuildFinalConfig` | `app.go` | Overrides are merged cleanly over file config |
-| 2.1 | `TestBuildAgent` | `app.go` | Raw map correctly wires typed structs into constructor |
-| 3.1 | `TestPromptForTask` | `app.go` | Interactive task prompt works if `--task` is absent |
-| 3.2 | `TestAppRunEndToEnd` | `app.go` | The full wiring executes successfully |
-| 4.1 | (Manual test) | `cmd/mini/main.go` | The binary compiles and runs |
-
-Once this runs, your agent is officially alive and usable from the terminal! You can run:
-
-```bash
-go run cmd/mini/main.go --task "Write a python script that prints hello world"
-```
+1. **Config Spec Parsing:** You must handle both strings (`mini.yaml`) AND key=values (`agent.yolo=true`). `ParseKeyValueSpec` solves this.
+2. **Dynamic Wiring:** Python relies on `importlib` and arbitrary dicts. Go relies on strict types, requiring explicit factory switches (`GetEnvironment`, etc.) mapping config dictionaries to strong structures before passing to constructors.
+3. **Dotenv Lifecycle:** Calling `IsConfigured()` early ensures users have an easy onboarding experience before the app panics on a missing API key.

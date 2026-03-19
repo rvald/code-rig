@@ -72,3 +72,20 @@ type Environment interface {
 	GetTemplateVars() map[string]any
 	Serialize() map[string]any
 }
+
+type Agent interface {
+	Run(task string) (RunResult, error)
+	Save(path string) error
+} // types is implicitly local in package agent via recursive types aliasing
+
+func BuildInteractiveAgentConfigFromRawMap(raw map[string]any) (InteractiveAgentConfig, error) {
+	data, err := yaml.Marshal(raw)
+	if err != nil {
+		return InteractiveAgentConfig{}, fmt.Errorf("marshaling inter config: %w", err)
+	}
+	var cfg InteractiveAgentConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return InteractiveAgentConfig{}, fmt.Errorf("unmarshaling inter config: %w", err)
+	}
+	return cfg, nil
+}

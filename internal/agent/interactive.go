@@ -128,6 +128,14 @@ func (a *InteractiveAgent) executeActions(msg Message) error {
 	for _, action := range actions {
 		obs, err := a.env.Execute(action)
 		if err != nil {
+			// Check SubmittedError first (more specific) before the generic InterruptAgentFlowError
+			var subErr *SubmittedError
+			if errors.As(err, &subErr) {
+				outputs = append(outputs, obs)
+				obsMsgs := a.model.FormatObservationMessages(msg, outputs)
+				a.addMessages(obsMsgs...)
+				return a.checkForNewTaskOrSubmit(subErr)
+			}
 			var flow *InterruptAgentFlowError
 			if errors.As(err, &flow) {
 				return err
@@ -135,13 +143,6 @@ func (a *InteractiveAgent) executeActions(msg Message) error {
 			obs = Observation{ReturnCode: -1, ExceptionInfo: err.Error()}
 		}
 		outputs = append(outputs, obs)
-
-		var subErr *SubmittedError
-		if errors.As(err, &subErr) {
-			obsMsgs := a.model.FormatObservationMessages(msg, outputs)
-			a.addMessages(obsMsgs...)
-			return a.checkForNewTaskOrSubmit(subErr)
-		}
 	}
 
 	obsMsgs := a.model.FormatObservationMessages(msg, outputs)
@@ -202,11 +203,11 @@ func (a *InteractiveAgent) Run(task string) (RunResult, error) {
 					Role: "exit", Content: err.Error(),
 					Extra: map[string]any{"exit_status": "Error", "submission": ""},
 				})
-				a.save()
+				a.Save("last_mini_run.traj.json")
 				return RunResult{}, err
 			}
 		}
-		a.save()
+		a.Save("last_mini_run.traj.json")
 
 		last := a.messages[len(a.messages)-1]
 		if last.Role == "exit" {

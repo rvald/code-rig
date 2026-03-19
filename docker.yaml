@@ -1,0 +1,68 @@
+# Docker environment config for code-rig
+# Usage: go run ./cmd/code-rig/ -c docker.yaml --task "your task" --yolo
+#
+# To mount your project into the container, add a run_arg:
+#   -c "environment.run_args=[\"--rm\", \"-v\", \"/path/to/your/project:/testbed\"]"
+
+agent:
+  system_template: |
+    You are a helpful assistant that can interact with a computer shell to solve programming tasks.
+  instance_template: |
+    Please solve this issue: {{.Task}}
+
+    You can execute bash commands and edit files to implement the necessary changes.
+
+    ## Recommended Workflow
+
+    1. Analyze the codebase by finding and reading relevant files
+    2. Create a script to reproduce the issue
+    3. Edit the source code to resolve the issue
+    4. Verify your fix works by running your script again
+    5. Test edge cases to ensure your fix is robust
+    6. Submit your changes by issuing: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
+
+    ## Command Execution Rules
+
+    - Your response MUST include AT LEAST ONE bash tool call
+    - Directory or environment variable changes are not persistent (new subshell each time)
+    - To submit, run: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` (alone, not combined with other commands)
+
+    System: {{.system}} {{.machine}}
+  step_limit: 250
+  cost_limit: 3.0
+  mode: yolo
+
+environment:
+  environment_class: docker
+  image: ubuntu:latest
+  cwd: "/testbed"
+  timeout: 60
+  interpreter:
+    - bash
+    - -c
+  env:
+    PAGER: cat
+    MANPAGER: cat
+    LESS: "-R"
+    PIP_PROGRESS_BAR: "off"
+    TQDM_DISABLE: "1"
+
+model:
+  observation_template: |
+    {"returncode": {{.Output.ReturnCode}}, "output": "{{.Output.Output}}"}
+  format_error_template: |
+    Tool call error:
+
+    <error>
+    {{.Error}}
+    </error>
+
+    Every response needs to use the 'bash' tool at least once to execute commands.
+
+    Call the bash tool with your command as the argument:
+    - Tool: bash
+    - Arguments: {"command": "your_command_here"}
+
+    If you want to end the task, please issue the following command: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
+    without any other command.
+  model_kwargs: {}

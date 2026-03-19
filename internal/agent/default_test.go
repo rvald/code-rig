@@ -484,7 +484,7 @@ func TestSaveCreatesFile(t *testing.T) {
 	)
 	agent.addMessages(Message{Role: "system", Content: "hello"})
 
-	agent.save()
+	agent.Save(path)
 
 	contents, err := os.ReadFile(path)
 	if err != nil {

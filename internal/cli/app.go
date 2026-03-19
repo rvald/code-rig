@@ -1,155 +1,191 @@
 package cli
 
 import (
+	"bufio"
+	"flag"
 	"fmt"
-	"io"
 	"os"
-	"strings"
 
-	"github.com/rvald/code-rig/internal/agent"
-	"github.com/rvald/code-rig/internal/config"
-	"github.com/rvald/code-rig/internal/environment"
-	"github.com/rvald/code-rig/internal/model"
-	"github.com/spf13/cobra"
+	"github.com/joho/godotenv"
+	"github.com/rvald/code-rig/internal/utils"
 )
 
+type stringSlice []string
+
+func (i *stringSlice) String() string { return fmt.Sprint(*i) }
+func (i *stringSlice) Set(value string) error {
+	*i = append(*i, value)
+	return nil
+}
+
 type App struct {
-	Task        string
-	Model       string
-	CostLimit   float64
-	ConfigFiles []string
-
-	ModelFactory func(model.ModelConfig) agent.Model
-	EnvFactory   func(environment.LocalEnvironmentConfig) agent.Environment
-
-	activeEnv agent.Environment
-}
-
-func DefaultModelFactory(cfg model.ModelConfig) agent.Model {
-	return model.NewOpenAIModel(cfg, os.Getenv("OPENAI_API_KEY"))
-}
-
-func DefaultEnvFactory(cfg environment.LocalEnvironmentConfig) agent.Environment {
-	return environment.NewLocalEnvironment(cfg)
+	Task             string
+	Model            string
+	ModelClass       string
+	AgentClass       string
+	EnvironmentClass string
+	Yolo             bool
+	CostLimit        float64
+	ConfigSpecs      stringSlice
+	OutputPath       string
+	ExitImmediately  bool
 }
 
 func NewApp() *App {
-	return &App{
-		ModelFactory: DefaultModelFactory,
-		EnvFactory:   DefaultEnvFactory,
-	}
+	return &App{}
 }
 
-func (a *App) Command() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "code-rig",
-		Short: "Code-Rig: Minimal SWE Agent",
-		Run: func(cmd *cobra.Command, args []string) {
-			// No-op for now, actual run logic added in Phase 4
-		},
-	}
+func (a *App) ParseArgs(args []string) error {
+	fs := flag.NewFlagSet("mini", flag.ContinueOnError)
 
-	cmd.Flags().StringVar(&a.Task, "task", "", "Task/problem statement")
-	cmd.Flags().StringVar(&a.Model, "model", "", "Model to use")
-	cmd.Flags().Float64Var(&a.CostLimit, "cost-limit", -1, "Cost limit. Set to 0 to disable.")
-	cmd.Flags().StringSliceVar(&a.ConfigFiles, "config", nil, "Path to config files or key-value pairs")
+	fs.StringVar(&a.Task, "task", "", "Task/problem statement (or -t)")
+	fs.StringVar(&a.Task, "t", "", "Task (shorthand)")
 
-	// Ensure pflag allows parsing even without the subcommand context running
-	// Normally cobra parses automatically during Execute()
-	return cmd
+	fs.StringVar(&a.Model, "model", "", "Model to use")
+	fs.StringVar(&a.Model, "m", "", "Model (shorthand)")
+
+	fs.BoolVar(&a.Yolo, "yolo", false, "Run without confirmation")
+	fs.BoolVar(&a.Yolo, "y", false, "Yolo (shorthand)")
+
+	fs.Float64Var(&a.CostLimit, "cost-limit", -1, "Cost limit")
+	fs.Float64Var(&a.CostLimit, "l", -1, "Cost limit (shorthand)")
+
+	fs.StringVar(&a.ModelClass, "model-class", "", "Model class")
+	fs.StringVar(&a.AgentClass, "agent-class", "", "Agent class")
+	fs.StringVar(&a.EnvironmentClass, "environment-class", "", "Env class")
+
+	fs.Var(&a.ConfigSpecs, "config", "Config specs")
+	fs.Var(&a.ConfigSpecs, "c", "Config specs (shorthand)")
+
+	fs.StringVar(&a.OutputPath, "output", "last_mini_run.traj.json", "Output trajectory")
+	fs.StringVar(&a.OutputPath, "o", "last_mini_run.traj.json", "Output (shorthand)")
+
+	return fs.Parse(args)
 }
 
-func (a *App) GetCLIOverrideConfig() config.RawConfig {
-	cfg := config.RawConfig{
-		Agent: make(map[string]any),
-		Model: make(map[string]any),
+func (a *App) BuildOverrideMap() map[string]any {
+	// Mimics the `configs.append({...})` block in mini.py line 73
+	m := map[string]any{
+		"run":         make(map[string]any),
+		"agent":       make(map[string]any),
+		"model":       make(map[string]any),
+		"environment": make(map[string]any),
 	}
 
-	if a.CostLimit >= 0 {
-		cfg.Agent["cost_limit"] = a.CostLimit
-	}
-	if a.Model != "" {
-		cfg.Model["model_name"] = a.Model
-	}
-	return cfg
-}
-
-func (a *App) BuildFinalConfig() (config.RawConfig, error) {
-	fileCfg, err := config.LoadAndMerge(a.ConfigFiles)
-	if err != nil {
-		return config.RawConfig{}, err
-	}
-
-	overrideCfg := a.GetCLIOverrideConfig()
-
-	return config.MergeConfigs(fileCfg, overrideCfg), nil
-}
-
-func (a *App) AssembleAgent(raw config.RawConfig) (*agent.DefaultAgent, error) {
-	agentCfg, err := agent.BuildAgentConfigFromRawMap(raw.Agent)
-	if err != nil {
-		return nil, fmt.Errorf("building agent config: %w", err)
-	}
-	if err := agent.ValidateAgentConfig(agentCfg); err != nil {
-		return nil, err
-	}
-
-	modelCfg, err := model.BuildModelConfigFromRawMap(raw.Model)
-	if err != nil {
-		return nil, fmt.Errorf("building model config: %w", err)
-	}
-
-	envCfg, err := environment.BuildEnvironmentConfigFromRawMap(raw.Environment)
-	if err != nil {
-		return nil, fmt.Errorf("building env config: %w", err)
-	}
-
-	m := a.ModelFactory(modelCfg)
-	e := a.EnvFactory(envCfg)
-	a.activeEnv = e
-
-	ag := agent.NewDefaultAgent(agentCfg, m, e)
-	return ag, nil
-}
-
-func (a *App) GetTask(r io.Reader) (string, error) {
 	if a.Task != "" {
-		return a.Task, nil
+		m["run"].(map[string]any)["task"] = a.Task
 	}
 
-	fmt.Println("What do you want to do? (Press Ctrl+D to submit)")
-	bytes, err := io.ReadAll(r)
-	if err != nil {
-		return "", err
+	if a.Yolo {
+		m["agent"].(map[string]any)["mode"] = "yolo"
 	}
-	return strings.TrimSpace(string(bytes)), nil
+	if a.CostLimit >= 0 {
+		m["agent"].(map[string]any)["cost_limit"] = a.CostLimit
+	}
+	if a.ExitImmediately {
+		m["agent"].(map[string]any)["confirm_exit"] = false
+	}
+	if a.OutputPath != "" {
+		m["agent"].(map[string]any)["output_path"] = a.OutputPath
+	}
+
+	if a.Model != "" {
+		m["model"].(map[string]any)["model_name"] = a.Model
+	}
+	if a.ModelClass != "" {
+		m["model"].(map[string]any)["model_class"] = a.ModelClass
+	}
+	if a.EnvironmentClass != "" {
+		m["environment"].(map[string]any)["environment_class"] = a.EnvironmentClass
+	}
+	if a.AgentClass != "" {
+		m["agent"].(map[string]any)["agent_class"] = a.AgentClass
+	}
+
+	return m
 }
 
-func (a *App) Run(r io.Reader) error {
-	task, err := a.GetTask(r)
-	if err != nil {
-		return fmt.Errorf("getting task: %w", err)
+func (a *App) Execute(args []string) error {
+	_ = godotenv.Load(".env") // Load env vars from .env if it exists
+
+	if !IsConfigured() {
+		RunSetupWizard(os.Stdin, os.Stdout, ".env")
+		_ = godotenv.Load(".env") // Reload after setup wizard writes to it
 	}
+
+	// 1. Parse Args
+	if err := a.ParseArgs(args); err != nil {
+		return err
+	}
+
+	// 2. Default Config Spec behavior
+	if len(a.ConfigSpecs) == 0 {
+		a.ConfigSpecs = []string{"mini.yaml"} // fallback equivalent
+	}
+
+	// 3. Build & merge maps
+	fileRawConfig, err := BuildFinalConfigFromSpecs(a.ConfigSpecs)
+	var fileConfigMap map[string]any
+	if err != nil {
+		// Log but continue, we might not have a mini.yaml and that's fine if we have -c overrides
+		fileConfigMap = make(map[string]any)
+	} else {
+		// Convert the merged RawConfig back to map[string]any to merge with our override map
+		fileConfigMap = map[string]any{
+			"agent":       fileRawConfig.Agent,
+			"model":       fileRawConfig.Model,
+			"environment": fileRawConfig.Environment,
+		}
+	}
+
+	finalMap := utils.RecursiveMerge(GetDefaultConfig(), fileConfigMap, a.BuildOverrideMap())
+
+	// 4. Prompt for task if missing
+	runSection, _ := finalMap["run"].(map[string]any)
+	task, _ := runSection["task"].(string)
 	if task == "" {
-		return fmt.Errorf("task cannot be empty")
+		fmt.Println("What do you want to do?")
+		scanner := bufio.NewScanner(os.Stdin)
+		if scanner.Scan() {
+			task = scanner.Text()
+		}
 	}
 
-	rawCfg, err := a.BuildFinalConfig()
+	// 5. Build dependencies using Factory Switchers
+	envClass, _ := finalMap["environment"].(map[string]any)["environment_class"].(string)
+	env, err := GetEnvironment(envClass, finalMap["environment"].(map[string]any))
 	if err != nil {
-		return fmt.Errorf("building config: %w", err)
+		return fmt.Errorf("environment factory: %w", err)
 	}
 
-	ag, err := a.AssembleAgent(rawCfg)
+	modelClass, _ := finalMap["model"].(map[string]any)["model_class"].(string)
+	mod, err := GetModel(modelClass, finalMap["model"].(map[string]any))
 	if err != nil {
-		return fmt.Errorf("assembling agent: %w", err)
+		return fmt.Errorf("model factory: %w", err)
 	}
 
+	agentClass, _ := finalMap["agent"].(map[string]any)["agent_class"].(string)
+	ag, err := GetAgent(agentClass, mod, env, finalMap["agent"].(map[string]any))
+	if err != nil {
+		return fmt.Errorf("agent factory: %w", err)
+	}
+
+	// 6. Run
 	_, err = ag.Run(task)
+
+	// 7. Save trajectory
+	outPath, _ := finalMap["agent"].(map[string]any)["output_path"].(string)
+	if outPath == "" {
+		outPath = "last_mini_run.traj.json" // fallback
+	}
+	ag.Save(outPath)
+	fmt.Printf("Saved trajectory to '%s'\n", outPath)
+
+	if cl, ok := env.(interface{ Cleanup() }); ok {
+		cl.Cleanup()
+	}
+
 	return err
 }
 
-func (a *App) Close() {
-	if cl, ok := a.activeEnv.(interface{ Cleanup() }); ok {
-		cl.Cleanup()
-	}
-}
+

@@ -36,6 +36,10 @@ type LimitsExceededError struct {
 	InterruptAgentFlowError
 }
 
+func (e *LimitsExceededError) Unwrap() error {
+	return &e.InterruptAgentFlowError
+}
+
 func NewLimitsExceededError() *LimitsExceededError {
 	return &LimitsExceededError{
 		InterruptAgentFlowError: InterruptAgentFlowError{
@@ -50,4 +54,8 @@ func NewLimitsExceededError() *LimitsExceededError {
 
 type FormatError struct {
 	InterruptAgentFlowError
+}
+
+func (e *FormatError) Unwrap() error {
+	return &e.InterruptAgentFlowError
 }
